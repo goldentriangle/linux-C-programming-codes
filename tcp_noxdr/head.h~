@@ -1,0 +1,272 @@
+/*THE CODE IS MY OWN WORK. IT WAS WRITTEN WITHOUT CONSULTING A
+TUTOR OR CODE WRITTEN BY OTHER STUDENTS. KAI WANG*/
+#include <errno.h>
+#include <signal.h>
+#include <poll.h>
+#include <stdio.h>  
+#include <sys/types.h>  
+#include <sys/socket.h>
+#include <stdlib.h> 
+#include <string.h> 
+#include <unistd.h>
+#include <limits.h>
+#include <time.h>
+#include <netdb.h>
+#include <arpa/inet.h> 
+#include <netinet/in.h> 
+
+#define MAXPENDING 50
+#define NMAXPF 10
+#define HOSTNAMELEN 512
+#define TARGETT 15.0			// 15 seconds
+#define INIT_RANGE_SIZE 1500
+#define TRUE 1
+#define FALSE 0
+
+//types of requests
+#define STARTUP 0
+#define NEXTRANGE 1
+#define REPORT 2
+#define RKILL 3
+#define CREPORT 4
+#define CEND 5
+#define PFFOUND 6
+#define RANGE 7
+#define MKILL 8
+
+const int MAXNUM= 100000-5;
+int range_list_size= 0;
+//organize the range objects in a double-linked list
+typedef struct range{
+	int start;	
+	int end;
+	int is_used;
+	
+	struct range *next, *pre;		//for the whole range list
+	struct range* next_by_host; 		//link ranges tested by the same host
+}range;
+
+typedef struct message_t{
+	int type, data, start, end;
+	char hostname[HOSTNAMELEN];
+	pid_t id;
+	time_t tm; 			//record the compute time
+}message_t;
+
+
+typedef struct procinfo_t{
+	pid_t id;
+	int tested;
+	int rem;			//last number tested when reporting
+	range rng;			//current range
+}procinfo_t;
+
+typedef struct hostinfo_t{
+	char hostname[HOSTNAMELEN];
+	int pf[NMAXPF];
+	int npf;
+	int nproc;
+}hostinfo_t;
+
+struct host_t;
+// establish a single connection for each process
+typedef struct process_t{
+	int fds;		//file descriptor for socket
+	procinfo_t pinfo;
+	
+	struct process_t* next;	//pointer to next process on the same host
+	struct host_t* hostp;		//pointer to host_t
+	
+}process_t;
+
+typedef struct host_t{
+	hostinfo_t hinfo;
+
+	process_t* phead;
+	process_t* ptail;
+	
+	struct host_t* next;
+
+	range* range_list;		// to be used
+}host_t;
+
+
+typedef struct pollfd_wrapper{
+	int capacity;			// current capacity
+	nfds_t nfds;			// current number of valid file descriptors
+	struct pollfd *fds;		// the first socket is listening socket
+	struct process_t** procptr;
+}pollfd_wrapper;
+
+int module(int a){
+	int ret;
+	if(a>=0){
+		ret= a%MAXNUM;	
+	}else{
+		int s= a;
+		while(s<0){
+			s+= MAXNUM;
+		}
+		ret= s%MAXNUM;
+	}
+	return ret;
+}
+
+//close fd
+int cleanup(int shut,int fds,int how){
+	if(shut==TRUE){
+		if(shutdown(fds,how)==-1){
+		 	perror ("shutdown");
+			return -1;
+		}
+	}
+	if (close(fds)==-1){
+		perror ("close");
+		return -1;
+	}
+	return 0;
+}
+
+int in_range(int n, range* rng){
+	if(rng->start<= rng->end){
+		if(n>= rng->start && n<=rng->end){
+			return TRUE;
+		}else{
+			return FALSE;
+		}
+	}else{
+		if(n>= rng->start || n<=rng->end){
+			return TRUE;
+		}else{
+			return FALSE;	
+		}		
+	}
+}
+
+
+int range_size1(range* rngp){
+	if(rngp->start<= rngp->end){
+		return rngp->end- rngp->start+1;
+	}else{
+		return rngp->end+ MAXNUM- rngp->start +1;		
+	}
+}
+
+int range_size2(int start, int end){
+	if(start<= end){
+		return end- start+1;
+	}else{
+		return end+ MAXNUM- start +1;		
+	}
+}
+
+//insert into the double-linked list a new range object before or after current one
+void insert_range(range* p, range*pre, range* next){
+	range* newp;
+	if(p==NULL){
+		fprintf(stderr, "invalid parameter p\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if(pre!= NULL){
+		newp= pre;
+		newp->pre= p->pre;
+		newp->next= p;
+		p->pre->next= newp;
+		p->pre= newp;
+		range_list_size++;
+	}
+	
+	if(next!= NULL){
+		newp= next;
+		newp->next= p->next;
+		newp->pre= p;
+		p->next->pre= newp;
+		p->next= newp;
+		range_list_size++;
+	}
+}
+
+void print_sig(int signo){
+	switch(signo){
+		case SIGINT:
+			printf("SIGINT\n");
+			break;
+
+		case SIGQUIT:
+			printf("SIGQUIT\n");
+			break;
+
+		case SIGHUP:
+			printf("SIGHUP\n");
+			break;
+		default:
+			printf("signal type unexpected\n");
+			break;
+			
+	}
+}
+
+int my_send(int fds, const void *buf, size_t len, int flags){
+	int retval;
+	size_t left= len;
+	while(left>0){
+		if((retval= send(fds, buf, left, flags))<=0){
+			if(errno== EINTR){
+				retval=0;
+			}else{
+				perror("send");
+				cleanup(FALSE, fds, 0);
+				return -1;
+			}
+		}
+		left-= retval;
+		buf+= retval;
+	}
+	return 0;
+}
+
+int my_recv(int fds, void *buf, size_t len, int flags){
+	int cnt=0;
+	int retval;
+	while(cnt< len){
+		if((retval= recv(fds, buf+cnt, len-cnt, flags))<= 0){
+			if(retval< 0){
+				perror("recv");
+				cleanup(FALSE, fds,0);
+			}else{
+				fprintf(stderr,"\tpeer disconnected...\n");
+				//cleanup(TRUE,fds, SHUT_RDWR);
+				cleanup(FALSE, fds,0);
+			}
+			return -1;
+		}
+		cnt+= retval;
+	} 
+	return 0;
+}
+
+void init_host_t(host_t* host, char* hostname){
+	strcpy(host->hinfo.hostname, hostname);
+	memset(host->hinfo.pf, 0, sizeof(int)* NMAXPF);
+	host->hinfo.npf= host->hinfo.nproc= 0;
+
+	host->phead= host->ptail= (process_t*)NULL;
+	host->next= (host_t*)NULL;
+	host->range_list= (range*)NULL;
+}
+
+void init_proc_t(process_t* proc, int fds, host_t* hostp, pid_t id){
+	proc->pinfo.tested=0;
+	proc->pinfo.id= id;
+	proc->pinfo.rng.start= proc->pinfo.rng.end= -1;
+	proc->pinfo.rem= 0;
+
+	proc->fds= fds;			//file descriptor for socket	
+
+	proc->next=(process_t*)NULL;	//pointer to next process on the same host
+	proc->hostp= hostp;	
+}
+
+
+

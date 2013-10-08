@@ -1,0 +1,100 @@
+/*THE CODE IS MY OWN WORK. IT WAS WRITTEN WITHOUT CONSULTING A
+TUTOR OR CODE WRITTEN BY OTHER STUDENTS. KAI WANG*/
+#include<unistd.h>
+#include<sys/types.h>
+#include<sys/stat.h>
+#include<sys/ipc.h>
+#include<sys/shm.h>
+#include<sys/msg.h>
+#include<stdio.h>
+#include<stdlib.h>
+#include<errno.h>
+#include<sys/wait.h>
+#include<fcntl.h>
+#include<string.h>
+#include<assert.h>
+#define true 1
+#define false 0
+//0x10940
+#define KEY (key_t)67904
+#define NUM_PROC 20
+#define NUM_PF 20
+#define NUM2TEST 1024000
+#define BITMAP_SIZE 1024000/8
+#define MANAGE_PORT 1
+#define getent 0
+#define pfnum 1
+#define mng_pid 2
+#define end 3
+#define report_test 4
+
+typedef struct proc_t{
+	pid_t pid;
+	int found;
+	int tested;
+	int skipped;
+}proc_t;
+
+typedef struct seg{
+	char bitmap[BITMAP_SIZE];
+	int pf[NUM_PF];
+	proc_t proc[NUM_PROC];
+}seg_t;
+
+/*typedef union{
+	getent, pfnum, mng_pid, end
+}msgtype;
+*/
+typedef struct msg_content{		// consider msq size later
+	int type;
+	union data_t{
+		int num;
+		int entry;
+		key_t pid;
+	}data;
+	pid_t sender;
+}msg_content;
+
+typedef struct msg_t{
+	long int mtarget;
+	msg_content mtext;		// check system msg maximum size
+}msg_t;
+
+char bit[8];
+void setbit(char* beg, int pos){
+	int divisor;
+	int remainder;
+	divisor= pos/8;
+	remainder= pos%8;
+	beg[divisor]= beg[divisor] | bit[remainder];
+}
+
+int readbit(char* beg, int pos){
+	int divisor;
+	int remainder;
+	divisor= pos/8;
+	remainder= pos%8;
+	return (beg[divisor]& bit[remainder])==0? 0: 1;
+}
+
+void print_sig(int signo){
+	switch(signo){
+		case SIGINT:
+			printf("SIGINT\n");
+			break;
+
+		case SIGQUIT:
+			printf("SIGQUIT\n");
+			break;
+
+		case SIGHUP:
+			printf("SIGHUP\n");
+			break;
+		default:
+			printf("signal type unexpected\n");
+			break;
+			
+	}
+}
+
+

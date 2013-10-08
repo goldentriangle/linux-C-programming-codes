@@ -1,0 +1,28 @@
+#include<unistd.h>
+#include<sys/types.h>
+#include<sys/stat.h>
+#include<sys/ipc.h>
+#include<sys/shm.h>
+#include<sys/msg.h>
+#include<stdio.h>
+#include<stdlib.h>
+#include<errno.h>
+#include<sys/wait.h>
+#include<fcntl.h>
+#include<string.h>
+
+int main(){
+	//execlp("./manage", "./manage", NULL);
+	printf("int size: %d\n", sizeof(int));
+
+}
+/*
+tested=0 ;
+	for(i=0; i< NUM2TEST; i++){	
+		if(readbit(seg->bitmap, i)== 1){
+			tested++;
+		}
+		printf("i: %d tested: %d bitmap:%d\n",i, tested, (int)seg->bitmap[i/8]);
+		
+	}
+*/

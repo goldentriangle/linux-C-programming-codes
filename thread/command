@@ -1,0 +1,13 @@
+start 2
+wait 3
+start 1000
+start 500
+wait 10
+idle 1
+idle 2
+report 
+report
+restart 2
+idle 3 
+restart 1
+restart 3
